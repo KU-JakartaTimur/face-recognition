@@ -192,6 +192,9 @@ writable/faces/
 
 - Python 3.10+
 - `cmake` (hanya jika install `dlib` dari source — tidak perlu jika pakai `dlib-bin` wheel)
+- `setuptools` (ada di `requirements.txt`). Pada Python 3.12+ `venv` tidak lagi
+  memasangnya otomatis, dan tanpa itu `face_recognition_models` gagal impor dengan
+  `ModuleNotFoundError: No module named 'pkg_resources'`
 
 ### Foto Master
 

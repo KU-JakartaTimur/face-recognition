@@ -18,3 +18,7 @@ Pillow==10.4.0
 opencv-python-headless==4.10.0.84
 dlib-bin>=19.24.2
 face-recognition-models==0.3.0
+# face_recognition_models mengimpor pkg_resources (bagian dari setuptools).
+# Sejak Python 3.12 venv tidak lagi memasang setuptools otomatis, jadi harus
+# disebut eksplisit. Pin <81 karena setuptools 81+ men-deprecate pkg_resources.
+setuptools<81
