@@ -1,6 +1,6 @@
 # Face Recognition API
 
-Service Flask untuk verifikasi wajah menggunakan library `face_recognition` (berbasis dlib). Menerima gambar base64 dan membandingkannya dengan wajah-wajah yang sudah terdaftar di folder `writable/faces/`.
+Service FastAPI untuk verifikasi wajah menggunakan library `face_recognition` (berbasis dlib). Menerima gambar base64 dan membandingkannya dengan wajah-wajah yang sudah terdaftar di folder `writable/faces/`.
 
 > **Sumber awal:** [absensi-wajah-laravel](https://github.com/alimochtar78/absensi-wajah-laravel) — dimodifikasi oleh **mdestafadilah**.
 
@@ -10,7 +10,7 @@ Service Flask untuk verifikasi wajah menggunakan library `face_recognition` (ber
 
 ```
 face_recognition/
-├── face_api.py          # Service Flask (entry point)
+├── main.py              # Service FastAPI (entry point)
 ├── requirements.txt     # Dependensi Python
 ├── .gitignore
 └── writable/
@@ -27,28 +27,29 @@ POST /verify-face (JSON: base64 image)
         │
         ▼
 ┌──────────────────┐
-│   face_api.py    │
-│  (Flask + dlib)  │
+│   main.py        │
+│ (FastAPI + dlib) │
 └──────┬───────────┘
        │
        ▼
 ┌──────────────────┐     ┌─────────────────────────┐
 │  decode base64   │────▶│  writable/faces/        │
 │  → OpenCV BGR    │     │  (wajah terdaftar)      │
-│  → RGB           │     │  filename = nama orang   │
-└──────┬───────────┘     └─────────────────────────┘
+│  → downscale     │     │  filename = nama orang   │
+│  → RGB           │     └─────────────────────────┘
+└──────┬───────────┘
        │
        ▼
 ┌──────────────────┐
 │ face_encodings() │
-│ compare_faces()  │
-└──────┬───────────┘
+│ face_distance()  │  ← ambil jarak terkecil, lalu
+└──────┬───────────┘    bandingkan dengan FACE_TOLERANCE
        │
        ▼
-  { status, name } atau { status, message }
+  { status, name, distance } atau { status, message }
 ```
 
-Cache wajah (`known_face_encodings` & `known_face_names`) dimuat sekali saat startup dari `writable/faces/`, lalu dimutasi oleh endpoint `/catch-face` dengan pelindung `threading.Lock` agar race-free.
+Cache wajah (`known_face_encodings` & `known_face_names`) dimuat sekali saat startup dari `writable/faces/`, lalu dimutasi oleh endpoint `/catch-face` di bawah `threading.Lock`. `/verify-face` menyalin kedua list di bawah lock yang sama sebelum mencocokkan, sehingga tidak pernah membaca cache yang baru terisi separuh (encoding sudah ditambah, nama belum).
 
 ---
 
@@ -84,24 +85,31 @@ Verifikasi wajah dari gambar base64.
 }
 ```
 
-> Field `face_encoding` harus dalam format data URI (`data:image/...;base64,...`).
+> Field `face_encoding` menerima data URI (`data:image/...;base64,...`) maupun base64 polos.
 
 **Response — Berhasil (200):**
 
 ```json
 {
   "status": "success",
-  "name": "budi"
+  "name": "budi",
+  "distance": 0.3812
 }
 ```
+
+`distance` adalah jarak euclidean ke encoding yang paling mirip (makin kecil makin yakin); nilainya selalu ≤ `FACE_TOLERANCE`. Kalau gambar berisi beberapa wajah, yang dilaporkan adalah pasangan dengan jarak terkecil.
 
 **Kemungkinan pesan error:**
 
 | Kode | Pesan | Penyebab |
 |------|-------|----------|
+| 400 | Body harus berupa JSON yang valid! | Body bukan JSON |
+| 400 | Body harus berupa objek JSON! | Body JSON tapi bukan object (mis. array) |
+| 400 | Field 'face_encoding' wajib diisi! | Field hilang atau kosong |
 | 400 | Gambar tidak dapat diproses! | Base64 tidak valid atau corrupt |
 | 400 | Wajah tidak terdeteksi! | Tidak ada wajah dalam gambar |
-| 400 | Wajah tidak dikenali! | Wajah ada tapi tidak cocok dengan yang terdaftar |
+| 400 | Wajah tidak dikenali! | Wajah ada tapi jarak terdekat > `FACE_TOLERANCE`, atau belum ada wajah terdaftar |
+| 413 | Gambar melebihi batas N byte! | Payload lebih besar dari `MAX_IMAGE_BYTES` |
 | 500 | (pesan exception) | Error internal server |
 
 ---
@@ -123,7 +131,7 @@ Daftarkan foto master baru ke folder `writable/faces/`. Foto harus berisi **tepa
 | Field | Wajib | Keterangan |
 |-------|-------|------------|
 | `face_encoding` | ya | Data URI atau base64 polos |
-| `name` | tidak | Nama orang; jadi nama file dan nama yang dikembalikan `/verify-face`. Karakter selain `A-Z a-z 0-9 _ . -` dibuang, spasi jadi `_`. Jika kosong, dipakai `captured_<timestamp>_<hash>` |
+| `name` | tidak | Nama orang; jadi nama file dan nama yang dikembalikan `/verify-face`. Karakter selain `A-Z a-z 0-9 _ . -` dibuang, spasi jadi `_`, dan nama device Windows (`CON`, `NUL`, `COM1`, …) ditolak. Jika kosong, dipakai `captured_<timestamp>_<hash>` |
 | `overwrite` | tidak | `true` untuk menimpa nama yang sudah terdaftar (atau ekstensi lain dari nama yang sama) |
 
 **Response — Berhasil (201):**
@@ -142,16 +150,21 @@ Daftarkan foto master baru ke folder `writable/faces/`. Foto harus berisi **tepa
 
 | Kode | Pesan | Penyebab |
 |------|-------|----------|
+| 400 | Body harus berupa JSON yang valid! | Body bukan JSON |
+| 400 | Body harus berupa objek JSON! | Body JSON tapi bukan object (mis. array) |
 | 400 | Field 'face_encoding' wajib diisi! | Body kosong / field hilang |
 | 400 | Gambar tidak dapat diproses! | Base64 tidak valid atau corrupt |
 | 400 | Wajah tidak terdeteksi! | Tidak ada wajah dalam gambar |
 | 400 | Terdeteksi N wajah, ... | Lebih dari satu wajah dalam foto |
-| 400 | Nama tidak valid! | `name` habis setelah sanitasi (mis. hanya simbol / non-ASCII) |
-| 409 | Nama '...' sudah terdaftar | Nama sudah ada, `overwrite` tidak diset |
+| 400 | Nama tidak valid! | `name` habis setelah sanitasi (mis. hanya simbol / non-ASCII) atau nama device Windows |
+| 409 | Nama '...' sudah terdaftar | Nama sudah ada di cache **atau** filenya ada di disk, dan `overwrite` tidak diset |
 | 409 | Wajah ini sudah terdaftar sebagai '...' | Wajah cocok dengan orang lain yang sudah terdaftar |
+| 413 | Gambar melebihi batas N byte! | Payload lebih besar dari `MAX_IMAGE_BYTES` |
 | 500 | Gagal menyimpan foto! | Folder tidak bisa ditulis |
 
-> Cache wajah in-memory diperbarui langsung tanpa reload seluruh folder. Pada gunicorn multi-worker, wajah baru hanya terlihat oleh worker yang menerima request — worker lain baru ikut setelah restart.
+> Cache wajah in-memory diperbarui langsung tanpa reload seluruh folder. Karena cache itu hidup di memori proses, service ini harus jalan **single-process**: dengan multi-worker, wajah baru hanya terlihat oleh worker yang menerima request — worker lain baru ikut setelah restart.
+
+> Foto disimpan setelah dikecilkan ke `MAX_DETECT_SIZE` (sisi terpanjang), sama persis dengan gambar yang dipakai menghitung encoding. Jadi encoding hasil reload saat restart identik dengan yang dipakai saat pendaftaran.
 
 ---
 
@@ -207,7 +220,7 @@ python3 -m venv venv
 source venv/bin/activate
 pip install --upgrade pip
 pip install -r requirements.txt
-pip install gunicorn
+pip install gunicorn uvicorn
 
 # Tambah swap sementara agar build dlib tidak kehabisan RAM
 sudo fallocate -l 2G /swapfile_temp
@@ -228,24 +241,30 @@ sudo rm /swapfile_temp
 # Verifikasi
 venv/bin/python -c "import dlib; import face_recognition; print('BERHASIL!')"
 
-# Jalankan service
-venv/bin/gunicorn -w 4 -b 127.0.0.1:5000 face_api:app
+# Jalankan service (FastAPI = ASGI, jadi gunicorn butuh worker class uvicorn).
+# -w 1 wajib: cache wajah ada di memori proses, lihat catatan /catch-face di atas.
+venv/bin/gunicorn -w 1 -k uvicorn.workers.UvicornWorker -b 127.0.0.1:5000 main:app
+
+# Alternatif tanpa gunicorn
+venv/bin/uvicorn main:app --host 127.0.0.1 --port 5000
 ```
 
 ### Jalankan (dev)
 
 ```bash
-python face_api.py
+python main.py
 ```
 
-Default: bind ke `127.0.0.1:5000` (lihat `if __name__ == "__main__"` di `face_api.py`).
+Default: bind ke `127.0.0.1:5000` (lihat `if __name__ == "__main__"` di `main.py`).
 
 ### Konfigurasi (Environment Variables)
 
 | Variabel | Default | Deskripsi |
 |----------|---------|-----------|
 | `KNOWN_FACES_DIR` | `writable/faces` | Path folder berisi gambar wajah terdaftar |
-| `FACE_TOLERANCE` | `0.6` | Jarak maksimum agar dua encoding dianggap orang yang sama (default dlib). Dipakai di `/verify-face` via `compare_faces` dan di `/catch-face` untuk deteksi duplikat lintas-nama |
+| `FACE_TOLERANCE` | `0.6` | Jarak maksimum agar dua encoding dianggap orang yang sama (default dlib). Dipakai di `/verify-face` untuk memutuskan match dan di `/catch-face` untuk deteksi duplikat lintas-nama — keduanya lewat `face_distance` |
+| `MAX_IMAGE_BYTES` | `8388608` (8 MB) | Batas ukuran gambar setelah decode base64; lebih dari ini ditolak 413 sebelum di-decode |
+| `MAX_DETECT_SIZE` | `1600` | Sisi terpanjang gambar sebelum deteksi wajah. Gambar lebih besar dikecilkan dulu supaya `face_locations()` (CPU) tidak menahan worker |
 
 ---
 
@@ -255,11 +274,11 @@ Diambil dari `requirements.txt`:
 
 | Paket | Versi | Keterangan |
 |-------|-------|------------|
-| flask | 3.0.3 | Web framework |
-| gunicorn | 22.0.0 | WSGI server untuk production |
+| fastapi | 0.115.6 | Web framework (ASGI) |
+| uvicorn | 0.32.1 | ASGI server; dipakai langsung atau sebagai worker class gunicorn |
+| gunicorn | 22.0.0 | Process manager untuk production (butuh `-k uvicorn.workers.UvicornWorker`) |
 | numpy | 1.26.4 | Operasi array gambar |
 | Pillow | 10.4.0 | Load gambar |
-| click | 8.1.7 | Dependency Flask CLI |
 | opencv-python-headless | 4.10.0.84 | Decode & konversi gambar (BGR↔RGB), tanpa GUI |
 | dlib-bin | >=19.24.2 | Wheel siap pakai untuk dlib (modul Python tetap `dlib`) |
 | face-recognition-models | 0.3.0 | Model wajah bawaan dlib |
@@ -269,9 +288,11 @@ Diambil dari `requirements.txt`:
 
 ## Catatan Keamanan
 
-- Sanitasi nama: hanya `[A-Za-z0-9 _.-]` lolos, dan strip di-trim; mencegah path traversal saat dipakai sebagai nama file.
+- Sanitasi nama: hanya `[A-Za-z0-9 _.-]` lolos, titik di ujung di-trim, dan nama device Windows (`CON`, `PRN`, `AUX`, `NUL`, `COM1`–`COM9`, `LPT1`–`LPT9`) ditolak — mencegah path traversal dan penulisan ke device saat dipakai sebagai nama file.
 - Folder `writable/faces/` dibuat otomatis (`os.makedirs(..., exist_ok=True)`) — pastikan proses punya izin tulis.
-- `threading.Lock` melindungi mutation cache saat `/catch-face` berjalan paralel dengan `/verify-face`.
+- `threading.Lock` melindungi cache: `/catch-face` memutasi di dalam lock, `/verify-face` menyalin isinya di dalam lock sebelum mencocokkan.
+- Payload dibatasi `MAX_IMAGE_BYTES` (ditolak sebelum decode) dan dikecilkan ke `MAX_DETECT_SIZE` sebelum deteksi, supaya satu gambar besar tidak menahan worker.
+- Body non-JSON, field hilang, dan gambar corrupt dijawab 4xx; hanya kegagalan tak terduga yang jadi 500.
 
 ---
 
