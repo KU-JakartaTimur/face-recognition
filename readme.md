@@ -38,6 +38,14 @@ POST /verify-face (JSON: base64 image)
 
 ## Endpoint
 
+### `GET /`
+
+Return informasi service
+
+### `GET /health`
+
+Check status service. Return `{"status": "ok"}` jika service jalan.
+
 ### `POST /verify-face`
 
 Verifikasi wajah dari gambar base64.
@@ -115,6 +123,37 @@ pip install -r requirements.txt
 
 # Install face_recognition tanpa deps (sudah pakai dlib-bin)
 pip install --no-deps face_recognition==1.3.0
+
+# Jika Gagal, Jalankan Seperti berikut:
+
+cd /www/wwwroot/face_recognition
+python3 -m venv venv
+source venv/bin/activate
+pip install --upgrade pip
+pip install -r requirements.txt
+pip install gunicorn
+
+# Saat Install, memori RAM akan terkuras.
+sudo fallocate -l 2G /swapfile_temp
+sudo chmod 600 /swapfile_temp
+sudo mkswap /swapfile_temp
+sudo swapon /swapfile_temp
+
+export MAKEFLAGS="-j1"
+export DLIB_NO_GUI_SUPPORT=1
+export CFLAGS="-mno-avx"
+# Proses ini akan memakan waktu sekitar 5–10 menit
+venv/bin/pip install dlib --no-cache-dir 
+
+# Hapus Memori RAM Sementara
+sudo swapoff /swapfile_temp
+sudo rm /swapfile_temp
+
+# Cek Instalasi
+venv/bin/python -c "import dlib; import face_recognition; print('BERHASIL!')"
+
+# Jalankan Service
+venv/bin/gunicorn -w 4 -b 127.0.0.1:5000 face_api:app
 ```
 
 ### Jalankan
