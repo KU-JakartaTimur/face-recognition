@@ -113,6 +113,10 @@ writable/faces/
 - Python 3.10+
 - `cmake` (jika install dlib dari source — tidak perlu jika pakai `dlib-bin`)
 
+### Foto Master
+
+- Simpan Foto di folder `writable/faces` atau gunakan service `catch-face` untuk mengumpulkan foto.
+
 ### Instalasi Manual
 
 ```bash
