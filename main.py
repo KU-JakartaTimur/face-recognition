@@ -16,8 +16,12 @@ import time
 
 app = FastAPI()
 
-# Folder yang berisi wajah siswa
-KNOWN_FACES_DIR = os.getenv("KNOWN_FACES_DIR", "writable/faces")
+# Folder yang berisi wajah siswa. Default-nya diikat ke lokasi file ini, bukan
+# ke cwd: dijalankan dari folder mana pun, service tetap membaca folder wajah
+# yang sama (kalau relatif, "uvicorn main:app" dari folder lain diam-diam
+# membaca folder kosong dan semua wajah jadi tidak dikenali).
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+KNOWN_FACES_DIR = os.getenv("KNOWN_FACES_DIR") or os.path.join(BASE_DIR, "writable", "faces")
 ALLOWED_EXT = (".jpg", ".jpeg", ".png", ".bmp", ".webp")
 known_face_encodings = []
 known_face_names = []
@@ -117,21 +121,34 @@ def _snapshot_faces():
     with _faces_lock:
         return list(known_face_encodings), list(known_face_names)
 
+
+def _scan_faces_dir():
+    """Baca seluruh folder wajah dari disk dan hasilkan (encodings, names).
+
+    File non-gambar (mis. .gitkeep) dan file rusak dilewati agar service tetap
+    jalan. Sengaja tidak menyentuh cache global supaya pemanggil bisa melakukan
+    pekerjaan berat ini di luar lock.
+    """
+    encodings = []
+    names = []
+    os.makedirs(KNOWN_FACES_DIR, exist_ok=True)
+    for filename in sorted(os.listdir(KNOWN_FACES_DIR)):
+        if not filename.lower().endswith(ALLOWED_EXT):
+            continue
+        try:
+            image = face_recognition.load_image_file(os.path.join(KNOWN_FACES_DIR, filename))
+            encoding = face_recognition.face_encodings(image)
+        except Exception as e:
+            print(f"[face-api] Gagal memuat {filename}: {e}")
+            continue
+        if encoding:
+            encodings.append(encoding[0])
+            names.append(os.path.splitext(filename)[0])  # Nama file = Nama siswa
+    return encodings, names
+
+
 # Load semua wajah yang sudah didaftarkan.
-# File non-gambar (mis. .gitkeep) dan file rusak dilewati agar service tetap jalan.
-os.makedirs(KNOWN_FACES_DIR, exist_ok=True)
-for filename in sorted(os.listdir(KNOWN_FACES_DIR)):
-    if not filename.lower().endswith(ALLOWED_EXT):
-        continue
-    try:
-        image = face_recognition.load_image_file(f"{KNOWN_FACES_DIR}/{filename}")
-        encoding = face_recognition.face_encodings(image)
-    except Exception as e:
-        print(f"[face-api] Gagal memuat {filename}: {e}")
-        continue
-    if encoding:
-        known_face_encodings.append(encoding[0])
-        known_face_names.append(os.path.splitext(filename)[0])  # Nama file = Nama siswa
+known_face_encodings, known_face_names = _scan_faces_dir()
 
 print(f"[face-api] {len(known_face_names)} wajah terdaftar dimuat dari {KNOWN_FACES_DIR}")
 
@@ -291,6 +308,34 @@ async def catch_face(request: Request):
         return _error(e.message, e.status_code)
     except Exception as e:
         return _error(str(e), 500)
+
+@app.post("/reload-faces")
+def reload_faces():
+    """Muat ulang cache wajah dari disk.
+
+    Cache hanya dibangun saat startup, jadi file yang disalin manual ke
+    KNOWN_FACES_DIR setelah service jalan tidak akan terbaca sampai endpoint ini
+    dipanggil (atau service di-restart). Wajah yang didaftarkan lewat
+    /catch-face tidak perlu ini karena cache-nya sudah diperbarui langsung.
+    """
+    # Scan berat (dekode gambar + encoding) sengaja di luar lock supaya
+    # /verify-face tidak ikut terhenti selama pemuatan ulang berlangsung.
+    encodings, names = _scan_faces_dir()
+
+    with _faces_lock:
+        # Ganti isi list, bukan rebind: /catch-face memutasi objek list yang
+        # sama, jadi rebind akan membuat kedua endpoint memegang list berbeda.
+        known_face_encodings[:] = encodings
+        known_face_names[:] = names
+        total = len(known_face_names)
+
+    print(f"[face-api] reload: {total} wajah terdaftar dimuat dari {KNOWN_FACES_DIR}")
+
+    return {
+        "status": "success",
+        "message": "Cache wajah dimuat ulang.",
+        "registered_faces": total,
+    }
 
 if __name__ == "__main__":
     import uvicorn

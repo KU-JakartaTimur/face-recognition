@@ -49,7 +49,7 @@ POST /verify-face (JSON: base64 image)
   { status, name, distance } atau { status, message }
 ```
 
-Cache wajah (`known_face_encodings` & `known_face_names`) dimuat sekali saat startup dari `writable/faces/`, lalu dimutasi oleh endpoint `/catch-face` di bawah `threading.Lock`. `/verify-face` menyalin kedua list di bawah lock yang sama sebelum mencocokkan, sehingga tidak pernah membaca cache yang baru terisi separuh (encoding sudah ditambah, nama belum).
+Cache wajah (`known_face_encodings` & `known_face_names`) dimuat sekali saat startup dari `writable/faces/`, lalu dimutasi oleh endpoint `/catch-face` di bawah `threading.Lock`. File yang disalin ke folder secara manual **tidak** ikut terbaca sampai `/reload-faces` dipanggil atau service di-restart. `/verify-face` menyalin kedua list di bawah lock yang sama sebelum mencocokkan, sehingga tidak pernah membaca cache yang baru terisi separuh (encoding sudah ditambah, nama belum).
 
 ---
 
@@ -166,6 +166,26 @@ Daftarkan foto master baru ke folder `writable/faces/`. Foto harus berisi **tepa
 
 > Foto disimpan setelah dikecilkan ke `MAX_DETECT_SIZE` (sisi terpanjang), sama persis dengan gambar yang dipakai menghitung encoding. Jadi encoding hasil reload saat restart identik dengan yang dipakai saat pendaftaran.
 
+### `POST /reload-faces`
+
+Baca ulang seluruh isi `KNOWN_FACES_DIR` dan ganti cache wajah. Dipakai saat file
+disalin/dihapus langsung di folder — wajah yang didaftarkan lewat `/catch-face`
+tidak memerlukan ini karena cache-nya sudah ikut diperbarui.
+
+Tidak ada request body.
+
+**Response — Berhasil (200):**
+
+```json
+{
+  "status": "success",
+  "message": "Cache wajah dimuat ulang.",
+  "registered_faces": 4
+}
+```
+
+> Pemindaian folder (dekode gambar + hitung encoding) berjalan di luar `threading.Lock`, jadi `/verify-face` tetap melayani cache lama selama proses berlangsung; penggantian cache-nya sendiri atomik di dalam lock.
+
 ---
 
 ## Struktur Folder Wajah
@@ -186,6 +206,21 @@ writable/faces/
 
 ---
 
+## Integrasi dengan SIKU
+
+Aplikasi SIKU (`d:/WEB-DEV/www/siku`) memakai service ini lewat `App\Libraries\FaceApi`:
+
+| Alur | Endpoint | Keterangan |
+|------|----------|------------|
+| Admin ambil foto wajah (`admin/camera-capture/store`) | `POST /catch-face` | `name` = **`unique_code`** siswa/guru, `overwrite=true`. Jika pendaftaran gagal, record capture di SIKU ikut dibatalkan agar kedua sisi tetap sinkron |
+| Siswa/guru absen (`scan/verify-face`) | `POST /verify-face` | `name` yang dikembalikan dicari lewat `cekSiswa()` / `cekGuru()` berdasarkan `unique_code` |
+
+Karena itu **nama wajah terdaftar harus `unique_code`**, bukan nama orang: nama
+orang tidak unik dan tidak bisa dipakai mencari data absensi. Alamat service
+diatur lewat `FACE_API_URL` di `.env` SIKU (default `http://localhost:5000`).
+
+---
+
 ## Setup & Menjalankan
 
 ### Prerequisites
@@ -198,8 +233,8 @@ writable/faces/
 
 ### Foto Master
 
-- Simpan foto di folder `writable/faces/` (bertambah otomatis saat service jalan), **atau**
-- Gunakan endpoint `POST /catch-face` untuk mendaftarkan foto dari aplikasi lain.
+- Gunakan endpoint `POST /catch-face` untuk mendaftarkan foto dari aplikasi lain (cache langsung diperbarui), **atau**
+- Salin foto ke folder `writable/faces/`, lalu panggil `POST /reload-faces` agar terbaca tanpa restart.
 
 ### Instalasi (Windows / lokal)
 
@@ -265,7 +300,7 @@ Default: bind ke `127.0.0.1:5000` (lihat `if __name__ == "__main__"` di `main.py
 
 | Variabel | Default | Deskripsi |
 |----------|---------|-----------|
-| `KNOWN_FACES_DIR` | `writable/faces` | Path folder berisi gambar wajah terdaftar |
+| `KNOWN_FACES_DIR` | `<folder main.py>/writable/faces` | Path folder berisi gambar wajah terdaftar. Default-nya absolut (diikat ke lokasi `main.py`), jadi service membaca folder yang sama dari cwd mana pun |
 | `FACE_TOLERANCE` | `0.6` | Jarak maksimum agar dua encoding dianggap orang yang sama (default dlib). Dipakai di `/verify-face` untuk memutuskan match dan di `/catch-face` untuk deteksi duplikat lintas-nama — keduanya lewat `face_distance` |
 | `MAX_IMAGE_BYTES` | `8388608` (8 MB) | Batas ukuran gambar setelah decode base64; lebih dari ini ditolak 413 sebelum di-decode |
 | `MAX_DETECT_SIZE` | `1600` | Sisi terpanjang gambar sebelum deteksi wajah. Gambar lebih besar dikecilkan dulu supaya `face_locations()` (CPU) tidak menahan worker |
