@@ -80,6 +80,75 @@ def verify_face():
     except Exception as e:
         return jsonify({"status": "error", "message": str(e)}), 500
 
+@app.route("/catch-face", methods=["POST"])
+def catch_face():
+    try:
+        # Ambil data dari request
+        data = request.json
+        img_data = base64.b64decode(data["face_encoding"].split(",")[1])
+        img_array = np.frombuffer(img_data, dtype=np.uint8)
+        img = cv2.imdecode(img_array, cv2.IMREAD_COLOR)
+
+        if img is None:
+            return jsonify({"status": "error", "message": "Gambar tidak dapat diproses!"}), 400
+
+        # Konversi BGR (OpenCV) → RGB (face_recognition)
+        img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+
+        # Cari wajah dalam gambar
+        face_locations = face_recognition.face_locations(img)
+        face_encodings = face_recognition.face_encodings(img, face_locations)
+
+        if not face_encodings:
+            return jsonify({"status": "error", "message": "Wajah tidak terdeteksi!"}), 400
+
+        # Simpan foto ke folder writable/faces
+        # Gunakan timestamp dan hash untuk nama unik
+        import hashlib
+        import time
+        
+        timestamp = int(time.time())
+        face_hash = hashlib.md5(face_encodings[0].tobytes()).hexdigest()[:8]
+        filename = f"captured_{timestamp}_{face_hash}.jpg"
+        filepath = os.path.join(KNOWN_FACES_DIR, filename)
+        
+        # Konversi kembali ke BGR untuk disimpan
+        img_bgr = cv2.cvtColor(img, cv2.COLOR_RGB2BGR)
+        
+        # Simpan file
+        success = cv2.imwrite(filepath, img_bgr)
+        
+        if not success:
+            return jsonify({"status": "error", "message": "Gagal menyimpan foto!"}), 500
+
+        # Tambahkan ke daftar encoding yang dikenal
+        known_face_encodings.append(face_encodings[0])
+        known_face_names.append(filename)
+
+        # Reload semua wajah untuk memperbarui daftar encoding
+        known_face_encodings.clear()
+        known_face_names.clear()
+        for f in sorted(os.listdir(KNOWN_FACES_DIR)):
+            if not f.lower().endswith(ALLOWED_EXT):
+                continue
+            try:
+                image = face_recognition.load_image_file(os.path.join(KNOWN_FACES_DIR, f))
+                encoding = face_recognition.face_encodings(image)
+                if encoding:
+                    known_face_encodings.append(encoding[0])
+                    known_face_names.append(f.split(".")[0])
+            except Exception:
+                continue
+
+        return jsonify({
+            "status": "success", 
+            "message": "Foto berhasil disimpan!",
+            "filename": filename,
+            "registered_faces": len(known_face_names)
+        }), 201
+
+    except Exception as e:
+        return jsonify({"status": "error", "message": str(e)}), 500
 
 if __name__ == "__main__":
     app.run(host="127.0.0.1", port=5000)
