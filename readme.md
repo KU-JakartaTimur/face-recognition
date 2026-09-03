@@ -249,6 +249,7 @@ venv/bin/python -c "import dlib; import face_recognition; print('BERHASIL!')"
 venv/bin/gunicorn -w 1 -k uvicorn.workers.UvicornWorker -b 127.0.0.1:5000 main:app
 
 # Alternatif tanpa gunicorn
+venv/bin/pip install --no-deps face_recognition==1.3.0
 venv/bin/uvicorn main:app --host 127.0.0.1 --port 5000
 ```
 
