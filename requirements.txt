@@ -2,7 +2,7 @@
 #
 # CATATAN: paket `face_recognition` sengaja TIDAK dicantumkan di sini.
 # Metadata-nya mewajibkan distribusi `dlib`, yang di-build dari source
-# (butuh cmake + ~15 menit compile). Dockerfile.face-api memasang
+# (butuh cmake + ~15 menit compile). Dockerfile di project ini memasang
 # `dlib-bin` (wheel siap pakai, modul Python-nya tetap bernama `dlib`)
 # lalu menginstal face_recognition dengan --no-deps.
 #

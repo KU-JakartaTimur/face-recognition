@@ -309,6 +309,57 @@ async def catch_face(request: Request):
     except Exception as e:
         return _error(str(e), 500)
 
+@app.post("/forget-face")
+async def forget_face(request: Request):
+    """Cabut satu wajah terdaftar: hapus filenya dan keluarkan dari cache.
+
+    Body JSON:
+      name : nama terdaftar yang akan dihapus (wajib)
+    """
+    try:
+        data = await _read_json(request)
+
+        raw_name = (data.get("name") or "").strip()
+        if not raw_name:
+            raise ApiError("Field 'name' wajib diisi!")
+
+        # Nama disanitasi dengan aturan yang sama seperti saat didaftarkan,
+        # supaya "../x" tidak bisa dipakai menghapus file di luar folder wajah
+        person = _safe_name(raw_name)
+        if not person:
+            raise ApiError("Nama tidak valid!")
+
+        with _faces_lock:
+            files = _stored_files(person)
+            if person not in known_face_names and not files:
+                raise ApiError(f"Nama '{person}' tidak terdaftar.", 404)
+
+            for path in files:
+                os.remove(path)
+
+            # Cache dan disk bisa memuat nama yang sama lebih dari sekali bila
+            # foldernya pernah diisi manual, jadi bersihkan semua kemunculan
+            while person in known_face_names:
+                index = known_face_names.index(person)
+                del known_face_names[index]
+                del known_face_encodings[index]
+
+            total = len(known_face_names)
+
+        print(f"[face-api] '{person}' dihapus, sisa {total} wajah terdaftar")
+
+        return {
+            "status": "success",
+            "message": "Wajah dihapus dari daftar.",
+            "name": person,
+            "registered_faces": total,
+        }
+
+    except ApiError as e:
+        return _error(e.message, e.status_code)
+    except Exception as e:
+        return _error(str(e), 500)
+
 @app.post("/reload-faces")
 def reload_faces():
     """Muat ulang cache wajah dari disk.

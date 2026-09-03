@@ -166,6 +166,42 @@ Daftarkan foto master baru ke folder `writable/faces/`. Foto harus berisi **tepa
 
 > Foto disimpan setelah dikecilkan ke `MAX_DETECT_SIZE` (sisi terpanjang), sama persis dengan gambar yang dipakai menghitung encoding. Jadi encoding hasil reload saat restart identik dengan yang dipakai saat pendaftaran.
 
+### `POST /forget-face`
+
+Cabut satu wajah terdaftar: filenya dihapus dari `KNOWN_FACES_DIR` dan entrinya
+dikeluarkan dari cache.
+
+**Request Body (JSON):**
+
+```json
+{ "name": "budi" }
+```
+
+| Field | Wajib | Keterangan |
+|-------|-------|------------|
+| `name` | ya | Nama terdaftar. Disanitasi dengan aturan yang sama seperti `/catch-face`, sehingga `../x` tidak bisa dipakai menghapus file di luar folder wajah |
+
+**Response — Berhasil (200):**
+
+```json
+{
+  "status": "success",
+  "message": "Wajah dihapus dari daftar.",
+  "name": "budi",
+  "registered_faces": 3
+}
+```
+
+**Kemungkinan pesan error:**
+
+| Kode | Pesan | Penyebab |
+|------|-------|----------|
+| 400 | Field 'name' wajib diisi! | `name` kosong / tidak dikirim |
+| 400 | Nama tidak valid! | `name` habis setelah sanitasi |
+| 404 | Nama '...' tidak terdaftar | Tidak ada di cache maupun di disk |
+
+---
+
 ### `POST /reload-faces`
 
 Baca ulang seluruh isi `KNOWN_FACES_DIR` dan ganti cache wajah. Dipakai saat file
@@ -214,6 +250,7 @@ Aplikasi SIKU (`d:/WEB-DEV/www/siku`) memakai service ini lewat `App\Libraries\F
 |------|----------|------------|
 | Admin ambil foto wajah (`admin/camera-capture/store`) | `POST /catch-face` | `name` = **`unique_code`** siswa/guru, `overwrite=true`. Jika pendaftaran gagal, record capture di SIKU ikut dibatalkan agar kedua sisi tetap sinkron |
 | Siswa/guru absen (`scan/verify-face`) | `POST /verify-face` | `name` yang dikembalikan dicari lewat `cekSiswa()` / `cekGuru()` berdasarkan `unique_code` |
+| Admin hapus foto (`admin/camera-capture/delete`) | `POST /forget-face` atau `POST /catch-face` | Registry hanya memuat satu wajah per orang, yaitu foto terakhir. Jadi wajahnya dicabut bila itu foto terakhirnya; kalau masih ada foto lain, registry dikembalikan ke foto tersisa yang terbaru. Sinkronisasi dijalankan **sebelum** penghapusan, sehingga kegagalan service membatalkan penghapusan |
 
 Karena itu **nama wajah terdaftar harus `unique_code`**, bukan nama orang: nama
 orang tidak unik dan tidak bisa dipakai mencari data absensi. Alamat service
@@ -235,6 +272,20 @@ diatur lewat `FACE_API_URL` di `.env` SIKU (default `http://localhost:5000`).
 
 - Gunakan endpoint `POST /catch-face` untuk mendaftarkan foto dari aplikasi lain (cache langsung diperbarui), **atau**
 - Salin foto ke folder `writable/faces/`, lalu panggil `POST /reload-faces` agar terbaca tanpa restart.
+
+### Jalankan dengan Docker
+
+```bash
+docker build -t face-api .
+
+# Folder wajah di-mount agar tidak hilang saat container dibuat ulang
+docker run -d --name face-api -p 5000:5000   -v face-faces:/app/writable/faces   face-api
+```
+
+Image-nya memakai `gunicorn -w 1` dengan worker class uvicorn — lihat catatan
+single-process pada `/catch-face`.
+
+---
 
 ### Instalasi (Windows / lokal)
 
