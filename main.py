@@ -278,6 +278,9 @@ async def catch_face(request: Request):
                         409,
                     )
 
+            # Folder bisa saja terhapus setelah service jalan; imwrite tidak
+            # membuat folder induk dan hanya mengembalikan False tanpa alasan.
+            os.makedirs(KNOWN_FACES_DIR, exist_ok=True)
             if not cv2.imwrite(filepath, img):
                 return _error("Gagal menyimpan foto!", 500)
 
