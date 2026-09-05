@@ -29,6 +29,23 @@ known_face_names = []
 # Jarak maksimum agar dua encoding dianggap orang yang sama (default dlib = 0.6)
 FACE_TOLERANCE = float(os.getenv("FACE_TOLERANCE", "0.6"))
 
+# Toleransi terpisah untuk dedup saat pendaftaran, sengaja lebih ketat.
+# 0.6 divalidasi pada foto frontal beresolusi bagus; foto absensi (wajah kecil
+# di frame, blur, backlight, masker) rutin menghasilkan jarak < 0.6 untuk dua
+# orang yang berbeda, sehingga pendaftaran sah ditolak 409.
+DUP_TOLERANCE = float(os.getenv("DUP_TOLERANCE", "0.45"))
+
+# Foto master di-encode dengan jitter supaya hasilnya lebih stabil; ini cuma
+# terjadi sekali saat pendaftaran, jadi biaya ~10x tidak terasa. Probe
+# /verify-face tetap num_jitters=1 agar absensi tidak melambat -- jitter hanya
+# merata-ratakan chip yang sama, jadi aman dicampur.
+#
+# ENCODE_MODEL beda cerita: model landmark ini yang meluruskan wajah sebelum
+# di-encode, jadi nilainya HARUS sama di sisi master dan sisi probe. Kalau
+# beda, chip-nya tidak sebangun dan semua jarak ikut melar.
+ENCODE_MODEL = os.getenv("FACE_ENCODE_MODEL", "large")
+ENCODE_JITTERS = int(os.getenv("FACE_ENCODE_JITTERS", "10"))
+
 # Batas ukuran gambar. Tanpa ini satu request 20 MP bisa menahan worker
 # beberapa detik di face_locations() yang jalan di CPU.
 MAX_IMAGE_BYTES = int(os.getenv("MAX_IMAGE_BYTES", str(8 * 1024 * 1024)))
@@ -137,7 +154,9 @@ def _scan_faces_dir():
             continue
         try:
             image = face_recognition.load_image_file(os.path.join(KNOWN_FACES_DIR, filename))
-            encoding = face_recognition.face_encodings(image)
+            encoding = face_recognition.face_encodings(
+                image, num_jitters=ENCODE_JITTERS, model=ENCODE_MODEL
+            )
         except Exception as e:
             print(f"[face-api] Gagal memuat {filename}: {e}")
             continue
@@ -180,7 +199,9 @@ async def verify_face(request: Request):
 
         # Cari wajah dalam gambar
         face_locations = face_recognition.face_locations(img_rgb)
-        face_encodings = face_recognition.face_encodings(img_rgb, face_locations)
+        face_encodings = face_recognition.face_encodings(
+            img_rgb, face_locations, model=ENCODE_MODEL
+        )
 
         if not face_encodings:
             return _error("Wajah tidak terdeteksi!")
@@ -243,7 +264,9 @@ async def catch_face(request: Request):
                 f"Terdeteksi {len(face_locations)} wajah, foto master harus berisi satu wajah!"
             )
 
-        encoding = face_recognition.face_encodings(img_rgb, face_locations)[0]
+        encoding = face_recognition.face_encodings(
+            img_rgb, face_locations, num_jitters=ENCODE_JITTERS, model=ENCODE_MODEL
+        )[0]
 
         # Tentukan nama terdaftar (= nama file tanpa ekstensi)
         raw_name = (data.get("name") or "").strip()
@@ -268,15 +291,22 @@ async def catch_face(request: Request):
                     409,
                 )
 
-            # Tolak wajah yang sudah terdaftar dengan nama lain
+            # Tolak wajah yang sudah terdaftar dengan nama lain. Jarak dan nama
+            # lawannya ikut dikirim: tanpa itu 409 di produksi tidak bisa
+            # dibedakan antara duplikat asli dan false positive, karena log akses
+            # cuma memuat status code.
             if known_face_encodings:
                 distances = face_recognition.face_distance(known_face_encodings, encoding)
                 nearest = int(np.argmin(distances))
-                if distances[nearest] <= FACE_TOLERANCE and known_face_names[nearest] != person:
-                    return _error(
-                        f"Wajah ini sudah terdaftar sebagai '{known_face_names[nearest]}'!",
-                        409,
-                    )
+                distance = float(distances[nearest])
+                if distance <= DUP_TOLERANCE and known_face_names[nearest] != person:
+                    return JSONResponse({
+                        "status": "error",
+                        "message": f"Wajah ini sudah terdaftar sebagai '{known_face_names[nearest]}'!",
+                        "matched_name": known_face_names[nearest],
+                        "distance": round(distance, 4),
+                        "tolerance": DUP_TOLERANCE,
+                    }, status_code=409)
 
             # Folder bisa saja terhapus setelah service jalan; imwrite tidak
             # membuat folder induk dan hanya mengembalikan False tanpa alasan.
