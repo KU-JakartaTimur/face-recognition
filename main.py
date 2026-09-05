@@ -14,6 +14,8 @@ import re
 import threading
 import time
 
+from dotenv import load_dotenv
+
 app = FastAPI()
 
 # Folder yang berisi wajah siswa. Default-nya diikat ke lokasi file ini, bukan
@@ -21,6 +23,13 @@ app = FastAPI()
 # yang sama (kalau relatif, "uvicorn main:app" dari folder lain diam-diam
 # membaca folder kosong dan semua wajah jadi tidak dikenali).
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+
+# Muat .env dari folder main.py, bukan dari cwd: sama alasannya dengan
+# BASE_DIR di atas -- "uvicorn main:app" yang dijalankan dari folder lain tetap
+# memakai konfigurasi yang sama. override=False (default) disengaja: env asli
+# dari "docker run -e" / systemd tetap menang atas isi file.
+load_dotenv(os.path.join(BASE_DIR, ".env"))
+
 KNOWN_FACES_DIR = os.getenv("KNOWN_FACES_DIR") or os.path.join(BASE_DIR, "writable", "faces")
 ALLOWED_EXT = (".jpg", ".jpeg", ".png", ".bmp", ".webp")
 known_face_encodings = []
