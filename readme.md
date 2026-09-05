@@ -158,13 +158,17 @@ Daftarkan foto master baru ke folder `writable/faces/`. Foto harus berisi **tepa
 | 400 | Terdeteksi N wajah, ... | Lebih dari satu wajah dalam foto |
 | 400 | Nama tidak valid! | `name` habis setelah sanitasi (mis. hanya simbol / non-ASCII) atau nama device Windows |
 | 409 | Nama '...' sudah terdaftar | Nama sudah ada di cache **atau** filenya ada di disk, dan `overwrite` tidak diset |
-| 409 | Wajah ini sudah terdaftar sebagai '...' | Wajah cocok dengan orang lain yang sudah terdaftar |
+| 409 | Wajah ini sudah terdaftar sebagai '...' | Jarak ke orang lain yang sudah terdaftar ≤ `DUP_TOLERANCE`. Body-nya memuat `matched_name`, `distance`, dan `tolerance` supaya duplikat asli bisa dibedakan dari false positive tanpa reproduksi manual |
 | 413 | Gambar melebihi batas N byte! | Payload lebih besar dari `MAX_IMAGE_BYTES` |
 | 500 | Gagal menyimpan foto! | Folder tidak bisa ditulis |
 
 > Cache wajah in-memory diperbarui langsung tanpa reload seluruh folder. Karena cache itu hidup di memori proses, service ini harus jalan **single-process**: dengan multi-worker, wajah baru hanya terlihat oleh worker yang menerima request — worker lain baru ikut setelah restart.
 
 > Foto disimpan setelah dikecilkan ke `MAX_DETECT_SIZE` (sisi terpanjang), sama persis dengan gambar yang dipakai menghitung encoding. Jadi encoding hasil reload saat restart identik dengan yang dipakai saat pendaftaran.
+
+> Dedup memakai `DUP_TOLERANCE` (default `0.45`), **bukan** `FACE_TOLERANCE`. 0.6 adalah default dlib yang divalidasi pada foto frontal beresolusi bagus; pada foto absensi (wajah kecil di frame, blur, backlight, masker, kacamata) dua orang berbeda rutin berjarak < 0.6, sehingga pendaftaran yang sah ditolak 409. Kalau masih ada false positive, turunkan lagi ke `0.40`; kalau justru ada duplikat asli yang lolos, naikkan bertahap sambil melihat `distance` di response 409.
+
+> Encoding foto master dihitung dengan `num_jitters=10` (`FACE_ENCODE_JITTERS`) agar lebih stabil — hanya sekali saat pendaftaran, jadi biayanya tidak terasa. Probe `/verify-face` tetap `num_jitters=1` supaya absensi tidak melambat; jitter cuma merata-ratakan chip yang sama, jadi aman dicampur. `FACE_ENCODE_MODEL` (model landmark untuk meluruskan wajah) sebaliknya harus sama di kedua sisi — kalau tidak, chip-nya tidak sebangun dan semua jarak ikut melar.
 
 ### `POST /forget-face`
 
@@ -352,9 +356,16 @@ Default: bind ke `127.0.0.1:5000` (lihat `if __name__ == "__main__"` di `main.py
 | Variabel | Default | Deskripsi |
 |----------|---------|-----------|
 | `KNOWN_FACES_DIR` | `<folder main.py>/writable/faces` | Path folder berisi gambar wajah terdaftar. Default-nya absolut (diikat ke lokasi `main.py`), jadi service membaca folder yang sama dari cwd mana pun |
-| `FACE_TOLERANCE` | `0.6` | Jarak maksimum agar dua encoding dianggap orang yang sama (default dlib). Dipakai di `/verify-face` untuk memutuskan match dan di `/catch-face` untuk deteksi duplikat lintas-nama — keduanya lewat `face_distance` |
+| `FACE_TOLERANCE` | `0.6` | Jarak maksimum agar dua encoding dianggap orang yang sama (default dlib). Dipakai di `/verify-face` untuk memutuskan match |
+| `DUP_TOLERANCE` | `0.45` | Ambang khusus deteksi duplikat lintas-nama di `/catch-face`. Sengaja lebih ketat dari `FACE_TOLERANCE`: pada foto berkualitas rendah, jarak 0.45–0.6 lebih sering berarti dua orang berbeda daripada duplikat |
+| `FACE_ENCODE_MODEL` | `large` | Model landmark untuk meluruskan wajah sebelum di-encode (`large` = 68 titik, `small` = 5 titik). Harus sama untuk foto master dan probe |
+| `FACE_ENCODE_JITTERS` | `10` | Berapa kali foto **master** di-encode ulang dengan perturbasi lalu dirata-ratakan. Makin tinggi makin stabil tapi makin lambat; probe `/verify-face` tetap 1 |
 | `MAX_IMAGE_BYTES` | `8388608` (8 MB) | Batas ukuran gambar setelah decode base64; lebih dari ini ditolak 413 sebelum di-decode |
 | `MAX_DETECT_SIZE` | `1600` | Sisi terpanjang gambar sebelum deteksi wajah. Gambar lebih besar dikecilkan dulu supaya `face_locations()` (CPU) tidak menahan worker |
+
+Template lengkap beserta penjelasannya ada di `.env.example` — salin jadi `.env` (`cp .env.example .env`) lalu ubah seperlunya.
+
+`main.py` memuat `.env` lewat `load_dotenv()` dari **folder `main.py`**, bukan dari cwd, dengan alasan yang sama seperti `KNOWN_FACES_DIR`: `uvicorn main:app` yang dijalankan dari folder lain tetap memakai konfigurasi yang sama. Environment variable asli tidak ditimpa (`override=False`), jadi `docker run -e`, `--env-file`, `env_file:` di compose, dan `EnvironmentFile=` di systemd tetap menang atas isi file. Di dalam Docker, `.env` sengaja tidak ikut di-`COPY` ke image — konfigurasi di-inject saat runtime.
 
 ---
 
